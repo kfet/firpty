@@ -1,0 +1,59 @@
+---
+name: release
+description: Release a new version of firpty. Confirms tests pass, updates VERSION and CHANGELOG.md, commits, tags, pushes, and tracks the GoReleaser run.
+---
+
+# Release Skill
+
+Release a new version of firpty.
+
+## Version determination
+
+If the user provides a version, use it. Otherwise, auto-determine:
+
+1. Read the current version from `VERSION`.
+2. Look at entries under `## [Unreleased]` in `CHANGELOG.md`.
+3. If there are `### Added` or `### Removed` entries → **minor** bump (e.g. 0.1.0 → 0.2.0).
+4. If there are only `### Fixed` or `### Changed` entries → **patch** bump (e.g. 0.1.0 → 0.1.1).
+5. If the section is empty → ask the user whether to proceed or abort.
+
+## Steps
+
+1. **Full build & test** — execute `make all` and confirm everything passes (includes the 100% coverage gate).
+2. **Check CHANGELOG** — read `CHANGELOG.md` and confirm there are entries under `## [Unreleased]`. If empty, ask the user.
+3. **Determine version** — follow the rules above if the user didn't specify one. State the version and proceed.
+4. **Update CHANGELOG** — rename `## [Unreleased]` to `## [VERSION] - YYYY-MM-DD` (today's date) and add a fresh empty `## [Unreleased]` section above it. Keep reverse-chronological order.
+5. **Update VERSION** — write the new version to the `VERSION` file (single trailing newline).
+6. **Commit** — `git add -A` then `git commit -m "release: vVERSION"`. Check `git status` first to confirm contents.
+7. **Tag** — `git tag -a vVERSION -m "release: vVERSION"` (pass `-m` to avoid opening an editor).
+8. **Verify locally** — `make build` and run `./bin/firpty version` to confirm it prints the new version.
+
+## Important notes
+
+- **Uncommitted changes**: Always check `git status` before committing. All release-related and pending changes should be included in the release commit.
+- **Avoid interactive git**: Always pass `-m` to `git tag -a` and `git commit`.
+- **Moving tags**: If you need to move a tag after an additional commit, use `git tag -d vVERSION` then re-create it.
+
+## Publishing
+
+After the user confirms, run `make publish` to push the commit and tag to origin. GoReleaser CI (`.github/workflows/release.yml`) then builds cross-platform binaries (darwin/linux × amd64/arm64) and creates the GitHub Release.
+
+If any step fails, stop and report the error. Do not push unless the user confirms.
+
+## Post-publish: Track GitHub Actions
+
+After `make publish` succeeds, poll GitHub Actions until every triggered workflow finishes:
+
+```bash
+gh run list --limit 10 --json status,conclusion,name,headSha,createdAt,databaseId 2>&1
+```
+
+Do **not** use `--branch` filtering — the tag-triggered `release` workflow doesn't appear under a branch filter. Match runs by `headSha` against the release commit.
+
+Loop every 30 seconds. Stop when all runs for the release commit SHA are `completed`. If any conclude with `failure` or `cancelled`, report the failure:
+
+```bash
+gh run view <run-id> --log-failed 2>&1 | tail -40
+```
+
+Do not ask the user whether to monitor — always do it automatically after a successful publish.
