@@ -1,6 +1,6 @@
-.PHONY: build test test-fast cover open_coverage clean
+.PHONY: build test test-fast open_coverage clean
 
-build:
+build: test
 	go build ./...
 	go build -o bin/firpty ./cmd/firpty
 
@@ -23,12 +23,7 @@ test:
 test-fast:
 	go test ./...
 
-cover:
-	go test -coverprofile=coverage.tmp.out ./...
-	@grep -v -E -f .covignore coverage.tmp.out > coverage.out
-	@go tool cover -func=coverage.out | tail
-
-open_coverage: cover
+open_coverage: test
 	go tool cover -html=coverage.out
 
 clean:
