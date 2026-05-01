@@ -31,7 +31,6 @@ func run(args []string, stdout, stderr *os.File) int {
 
 	if cmd == "version" || cmd == "--version" || cmd == "-v" {
 		fmt.Fprintln(stdout, version)
-		_ = rest
 		return 0
 	}
 
