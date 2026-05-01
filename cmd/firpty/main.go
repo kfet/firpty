@@ -13,6 +13,9 @@ import (
 	"github.com/kfet/firpty"
 )
 
+// version is set via -ldflags at build time.
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -20,11 +23,17 @@ func main() {
 func run(args []string, stdout, stderr *os.File) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: firpty <command> [args...]")
-		fmt.Fprintln(stderr, "commands: serve, new, win, send, sendraw, capture, wait, list, kill, killwin, alive, shutdown")
+		fmt.Fprintln(stderr, "commands: serve, new, win, send, sendraw, capture, wait, list, kill, killwin, alive, shutdown, version")
 		return 1
 	}
 
 	cmd, rest := args[0], args[1:]
+
+	if cmd == "version" || cmd == "--version" || cmd == "-v" {
+		fmt.Fprintln(stdout, version)
+		_ = rest
+		return 0
+	}
 
 	if cmd == "serve" {
 		sock := firpty.DefaultSocketPath()

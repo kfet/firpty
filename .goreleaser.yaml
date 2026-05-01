@@ -1,0 +1,35 @@
+version: 2
+project_name: firpty
+
+builds:
+  - main: ./cmd/firpty/
+    binary: firpty
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [binary]
+    name_template: "firpty-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+  extra_files:
+    - glob: LICENSE
+
+release:
+  github:
+    owner: kfet
+    name: firpty
+  prerelease: auto
+  name_template: "firpty {{.Version}}"
+  extra_files:
+    - glob: LICENSE
