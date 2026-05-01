@@ -59,7 +59,6 @@ type Session struct {
 	proc    PTYProcess
 	screen  *Screen
 	done    chan struct{}
-	readErr error
 }
 
 // Manager owns a collection of named sessions, analogous to a tmux server.
@@ -162,7 +161,6 @@ func (s *Session) pump() {
 			_, _ = s.screen.Write(buf[:n])
 		}
 		if err != nil {
-			s.readErr = err
 			return
 		}
 	}

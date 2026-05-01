@@ -48,9 +48,9 @@ func DefaultSocketPath() string {
 		dir = os.Getenv("FIR_PTY_SOCKET_DIR")
 	}
 	if dir == "" {
-		dir = filepath.Join(osTempDir(), "firpty")
+		dir = filepath.Join(os.TempDir(), "firpty")
 	}
-	_ = osMkdirAll(dir, 0o700)
+	_ = os.MkdirAll(dir, 0o700)
 	return filepath.Join(dir, "pty.sock")
 }
 
@@ -60,7 +60,7 @@ func NewServer(sockPath string, mgr *Manager) (*Server, error) {
 	if mgr == nil {
 		mgr = NewManager()
 	}
-	_ = osRemove(sockPath) // remove stale socket
+	_ = os.Remove(sockPath) // remove stale socket
 	ln, err := netListen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", sockPath, err)

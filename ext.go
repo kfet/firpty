@@ -67,11 +67,3 @@ type realTicker struct{ t *time.Ticker }
 func (r realTicker) C() <-chan time.Time { return r.t.C }
 func (r realTicker) Stop()                { r.t.Stop() }
 
-// defaultTempDir / defaultMkdirAll / defaultRemove / defaultListen wrappers
-// for the server. These are package-level vars so tests can swap them where
-// it actually matters; otherwise they're trivial pass-throughs.
-var (
-	osTempDir  = os.TempDir
-	osMkdirAll = os.MkdirAll
-	osRemove   = os.Remove
-)
