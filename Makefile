@@ -59,8 +59,12 @@ clean:
 RELEASE_TAG := v$(VERSION_FILE)
 
 publish: build
+	@git fetch --tags --quiet origin
 	@if git rev-parse $(RELEASE_TAG) >/dev/null 2>&1; then \
-		echo "Tag $(RELEASE_TAG) already exists"; exit 1; \
+		echo "Tag $(RELEASE_TAG) already exists locally"; exit 1; \
+	fi
+	@if git ls-remote --exit-code --tags origin refs/tags/$(RELEASE_TAG) >/dev/null 2>&1; then \
+		echo "Tag $(RELEASE_TAG) already exists on origin"; exit 1; \
 	fi
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "Working tree dirty; commit first"; exit 1; \

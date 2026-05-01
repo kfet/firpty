@@ -7,6 +7,8 @@ All notable changes to firpty.
 ### Added
 - `firpty version` subcommand prints the build-time version.
 - Release pipeline: `make publish` tags + pushes; GoReleaser CI builds darwin/linux × amd64/arm64 binaries on tag push.
+- `make all` alias for `make build`.
+- CI runs on Linux + macOS with workflow concurrency limits.
 - `.fir/skills/release/SKILL.md` documenting the release flow.
 
 ### Changed
