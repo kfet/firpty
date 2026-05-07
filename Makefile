@@ -28,17 +28,12 @@ build: test
 test:
 	@tmpfile=$$(mktemp); \
 	trap 'rm -f $$tmpfile' EXIT; \
-	go test -race -shuffle=on -coverprofile=coverage.tmp.out ./... > $$tmpfile 2>&1; \
-	rc=$$?; \
-	cat $$tmpfile; \
-	if [ $$rc -ne 0 ]; then exit $$rc; fi; \
-	grep -v -E -f .covignore coverage.tmp.out > coverage.out; \
-	if go tool cover -func=coverage.out | tail -1 | grep -q -v '100.0%'; then \
-		echo "ERROR: coverage < 100% (excluded lines per .covignore)"; \
-		go tool cover -func=coverage.out | grep -v '100.0%' || true; \
-		exit 1; \
+	if ! go test -race -shuffle=on -coverprofile=coverage.tmp.out ./... > $$tmpfile 2>&1; then \
+		cat $$tmpfile; exit 1; \
 	fi; \
-	echo "✓ Coverage 100% (excluding .covignore)"
+	cat $$tmpfile
+	@go run github.com/kfet/covgate/cmd/covgate@v0.1.0 \
+		-profile=coverage.tmp.out -out=coverage.out -ignore=.covignore -min=100
 
 test-fast:
 	go test ./...
