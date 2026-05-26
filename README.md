@@ -1,5 +1,10 @@
 # firpty
 
+[![CI](https://github.com/kfet/firpty/actions/workflows/ci.yml/badge.svg)](https://github.com/kfet/firpty/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/kfet/firpty.svg)](https://pkg.go.dev/github.com/kfet/firpty)
+[![Go Report Card](https://goreportcard.com/badge/github.com/kfet/firpty)](https://goreportcard.com/report/github.com/kfet/firpty)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A Go-native, tmux-free terminal multiplexer for driving interactive
 processes. Extracted from the [fir](https://github.com/kfet/fir)
 coding-agent harness, where it serves as a fallback for the `tmux-driver`
