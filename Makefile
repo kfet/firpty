@@ -18,6 +18,10 @@ endif
 
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
+# Coverage gate. Pinned as a `tool` directive in go.mod (`go get -tool`), so the
+# version is tracked there rather than inline here.
+COVGATE := go tool covgate
+
 all: build
 
 build: test
@@ -32,7 +36,7 @@ test:
 		cat $$tmpfile; exit 1; \
 	fi; \
 	cat $$tmpfile
-	@go run github.com/kfet/covgate/cmd/covgate@v0.1.0 \
+	@$(COVGATE) \
 		-profile=coverage.tmp.out -out=coverage.out -ignore=.covignore -min=100
 
 test-fast:
