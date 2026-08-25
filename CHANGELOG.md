@@ -4,6 +4,9 @@ All notable changes to firpty.
 
 ## [Unreleased]
 
+### Changed
+- **Breaking (toolchain):** minimum Go is now **1.24** (was 1.23). Needed so the coverage gate can be pinned as a `tool` directive in `go.mod` (`tool` directives landed in Go 1.24). CI (`go-version-file: go.mod`) follows automatically.
+
 ### Added
 - `firpty version` subcommand prints the build-time version.
 - Release pipeline: `make publish` tags + pushes; GoReleaser CI builds darwin/linux × amd64/arm64 binaries on tag push.
