@@ -3,6 +3,7 @@ package firpty
 import (
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -22,12 +23,22 @@ type realPTYProcess struct {
 func (r *realPTYProcess) Read(p []byte) (int, error)  { return r.ptmx.Read(p) }
 func (r *realPTYProcess) Write(p []byte) (int, error) { return r.ptmx.Write(p) }
 func (r *realPTYProcess) Close() error                { return r.ptmx.Close() }
-func (r *realPTYProcess) Kill() error {
+
+// SignalGroup sends sig to the process GROUP the child leads.
+//
+// The group, not the process. pty.StartWithSize starts the child with
+// setsid, so it leads its own session and process group and everything it
+// spawns inherits that group. Signalling only the child leaves a language
+// server, a build, or a shell command running with its terminal torn out
+// from under it — the orphan this package used to create on every
+// KillWindow.
+func (r *realPTYProcess) SignalGroup(sig syscall.Signal) error {
 	if r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
-	return r.cmd.Process.Kill()
+	return interpretKill(syscall.Kill(-r.cmd.Process.Pid, sig))
 }
+
 func (r *realPTYProcess) Wait() error {
 	if r.cmd == nil {
 		return nil
@@ -65,5 +76,4 @@ func (realClock) NewTicker(d time.Duration) Ticker       { return realTicker{tim
 type realTicker struct{ t *time.Ticker }
 
 func (r realTicker) C() <-chan time.Time { return r.t.C }
-func (r realTicker) Stop()                { r.t.Stop() }
-
+func (r realTicker) Stop()               { r.t.Stop() }

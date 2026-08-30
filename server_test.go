@@ -175,9 +175,9 @@ func TestServer_DispatchErrorBranches(t *testing.T) {
 		method string
 		params any
 	}{
-		{"new", map[string]string{}},                                 // empty session → manager error
-		{"new_window", map[string]string{"session": "x"}},            // empty window
-		{"send", map[string]string{"target": "nope", "text": "x"}},   // no such
+		{"new", map[string]string{}},                               // empty session → manager error
+		{"new_window", map[string]string{"session": "x"}},          // empty window
+		{"send", map[string]string{"target": "nope", "text": "x"}}, // no such
 		{"send_raw", map[string]string{"target": "nope", "data": ""}},
 		{"capture", map[string]any{"target": "nope", "lines": 5}},
 		{"wait", map[string]any{"target": "nope", "pattern": ".", "timeout": 1}},

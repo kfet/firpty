@@ -3,6 +3,7 @@ package firpty
 import (
 	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -12,7 +13,8 @@ func newTestManager(t *testing.T) (*Manager, func() []*fakeProc, func(error), *f
 	t.Helper()
 	starter, get, setFail := recordingStarter()
 	clk := newFakeClock()
-	m := NewManager(WithStarter(starter), WithClock(clk), WithTickInterval(time.Millisecond))
+	m := NewManager(WithStarter(starter), WithClock(clk), WithTickInterval(time.Millisecond),
+		WithKillGrace(50*time.Millisecond), WithDrainGrace(100*time.Millisecond))
 	return m, get, setFail, clk
 }
 
@@ -316,4 +318,189 @@ func TestManager_PumpHandlesNonEOFError(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatal("pump did not exit on read error")
+}
+
+// --- teardown -----------------------------------------------------------
+
+// waitFor polls a condition to a deadline and fails loudly. Used to
+// synchronise with the pump and reap goroutines.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// The ordinary path: a hangup is enough, and it goes to the GROUP.
+func TestKillWindow_SignalsTheGroupWithSIGHUPFirst(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	if err := m.KillWindow("p", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if got := get()[0].sent(); len(got) != 1 || got[0] != syscall.SIGHUP {
+		t.Fatalf("signals = %v, want [SIGHUP]", got)
+	}
+}
+
+// A program that traps SIGHUP gets killGrace and then SIGKILL. Without the
+// escalation it would outlive the window that owns it.
+func TestKillWindow_EscalatesToSIGKILLWhenSIGHUPIsIgnored(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	get()[0].ignoreHUP.Store(true)
+	if err := m.KillWindow("p", "w"); err != nil {
+		t.Fatal(err)
+	}
+	got := get()[0].sent()
+	if len(got) != 2 || got[0] != syscall.SIGHUP || got[1] != syscall.SIGKILL {
+		t.Fatalf("signals = %v, want [SIGHUP SIGKILL]", got)
+	}
+	if m.Alive("p:w") {
+		t.Fatal("the window survived SIGKILL")
+	}
+}
+
+// The bug this release exists for. The program exits on its own, leaving a
+// child holding the terminal. Killing only the leader — which is what
+// KillWindow used to do, and what it would still do if teardown decided from
+// the pid rather than from the terminal — leaves that child running with its
+// terminal closed under it.
+func TestKillWindow_ReachesChildrenThatOutlivedTheProgram(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	s, _ := m.New("p", "w")
+	f := get()[0]
+	f.exitLeavingSurvivor()
+	waitFor(t, "the program to be reaped", func() bool { return !m.Alive("p:w") })
+
+	done := make(chan error, 1)
+	go func() { done <- m.KillWindow("p", "w") }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("KillWindow hung: the terminal is held by a survivor and nothing bounded the wait")
+	}
+	if got := f.sent(); len(got) == 0 {
+		t.Fatal("the survivor was never signalled: KillWindow orphaned it")
+	}
+	select {
+	case <-s.done:
+	default:
+		t.Fatal("the terminal was never released")
+	}
+}
+
+// The other half of the same decision. A window that has been reaped AND
+// whose terminal has no holder left must be signalled with NOTHING: the pid
+// is free for the kernel to reuse, so the group could be a stranger's.
+func TestKillWindow_DoesNotSignalAWindowWithNothingLeftToKill(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	f := get()[0]
+	f.emitAndClose("bye")
+	waitFor(t, "the window to settle", func() bool {
+		s, err := m.get("p:w")
+		if err != nil {
+			return false
+		}
+		return s.gone()
+	})
+	if err := m.KillWindow("p", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.sent(); len(got) != 0 {
+		t.Fatalf("signalled a window with nothing left to kill: %v", got)
+	}
+}
+
+// A descendant that called setsid(2) left the process group, so the signal
+// never reaches it and it can hold the terminal indefinitely. Teardown must
+// give up on the last bytes rather than block forever. The escape is modelled
+// by a SignalGroup that does nothing, which is exactly what the kernel does
+// with a signal aimed at a group the process is no longer in.
+func TestKillWindow_StopsWaitingForATerminalNobodyWillRelease(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	f := get()[0]
+	f.ignoreHUP.Store(true)
+	f.exitLeavingSurvivor()
+	f.mu.Lock()
+	f.signalErr = errFake // signals land nowhere and are refused
+	f.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() { done <- m.KillWindow("p", "w") }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a refused signal should be reported")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("KillWindow hung on a terminal its signal could never free")
+	}
+}
+
+// A refused signal is reported rather than swallowed: it means a program is
+// still running with nobody driving it. Here both signals are refused — the
+// hangup lands nowhere, so teardown escalates and that is refused too — and
+// the caller hears about the last failure.
+func TestKillWindow_ReportsARefusedSignal(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	f := get()[0]
+	f.mu.Lock()
+	f.signalErr = errFake
+	f.mu.Unlock()
+	err := m.KillWindow("p", "w")
+	if err == nil || !strings.Contains(err.Error(), "fake error") {
+		t.Fatalf("err = %v, want the refusal reported", err)
+	}
+	if got := get()[0].sent(); len(got) != 2 {
+		t.Fatalf("signals = %v, want the refused hangup to be escalated", got)
+	}
+}
+
+// Teardown runs once even when a window is reachable twice — Wait must not be
+// called twice on the same child.
+func TestKillWindow_IsIdempotent(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	s, _ := m.New("p", "w")
+	if err := m.KillWindow("p", "w"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.teardown(s); err != nil {
+		t.Fatal(err)
+	}
+	if got := get()[0].sent(); len(got) != 1 {
+		t.Fatalf("teardown ran twice: %v", got)
+	}
+}
+
+// A window whose program exits on its own is reaped without anybody killing
+// it. Before the reaper existed it stayed a zombie for the life of the
+// Manager.
+func TestWindowIsReapedWithoutBeingKilled(t *testing.T) {
+	m, get, _, _ := newTestManager(t)
+	_, _ = m.New("p", "w")
+	get()[0].emitAndClose("done")
+	waitFor(t, "the program to be reaped", func() bool { return !m.Alive("p:w") })
+}
+
+func TestInterpretKill(t *testing.T) {
+	if err := interpretKill(nil); err != nil {
+		t.Errorf("interpretKill(nil) = %v", err)
+	}
+	if err := interpretKill(syscall.ESRCH); err != nil {
+		t.Errorf("interpretKill(ESRCH) = %v, want nil: an empty group is the goal, not a failure", err)
+	}
+	if err := interpretKill(syscall.EPERM); err != syscall.EPERM {
+		t.Errorf("interpretKill(EPERM) = %v, want it reported", err)
+	}
 }

@@ -5,29 +5,44 @@ import (
 	"io"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 // --- fake PTYProcess ----------------------------------------------------
 
+// fakeProc models a PTY-backed child and, crucially, the process GROUP it
+// leads. The two are separable here exactly as they are in the kernel: the
+// leader can exit while something it spawned keeps the terminal open, which
+// is the case teardown exists for and the one a Kill-the-leader fake could
+// never express.
 type fakeProc struct {
-	pr *io.PipeReader
+	pr *io.PipeReader // the master's read side: open while the terminal is held
 	pw *io.PipeWriter
 
 	mu      sync.Mutex
 	written []byte
+	signals []syscall.Signal
 
-	writeErr error // returned by Write if non-nil
-
-	killCalls int32
+	writeErr  error // returned by Write if non-nil
+	signalErr error // returned by SignalGroup if non-nil
 	waitErr   error
-	waitCalls int32
-	closed    int32
+
+	// ignoreHUP models a program that traps SIGHUP: only SIGKILL ends it.
+	ignoreHUP atomic.Bool
+	// survivor models a child of the child — a language server, a build —
+	// that keeps the terminal open after the leader itself has exited, and
+	// only lets go when the whole group is killed.
+	survivor atomic.Bool
+
+	exited    chan struct{}
+	exitOnce  sync.Once
+	closeOnce sync.Once
 }
 
 func newFakeProc() *fakeProc {
 	pr, pw := io.Pipe()
-	return &fakeProc{pr: pr, pw: pw}
+	return &fakeProc{pr: pr, pw: pw, exited: make(chan struct{})}
 }
 
 func (f *fakeProc) Read(p []byte) (int, error) { return f.pr.Read(p) }
@@ -43,46 +58,76 @@ func (f *fakeProc) Write(p []byte) (int, error) {
 }
 
 func (f *fakeProc) Close() error {
-	if atomic.CompareAndSwapInt32(&f.closed, 0, 1) {
-		_ = f.pw.Close()
-	}
+	f.releaseTerminal()
 	return nil
 }
 
-func (f *fakeProc) Kill() error {
-	atomic.AddInt32(&f.killCalls, 1)
-	// Killing also unblocks pump readers.
-	if atomic.CompareAndSwapInt32(&f.closed, 0, 1) {
-		_ = f.pw.Close()
+func (f *fakeProc) SignalGroup(sig syscall.Signal) error {
+	f.mu.Lock()
+	f.signals = append(f.signals, sig)
+	err := f.signalErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	switch {
+	case sig == syscall.SIGKILL:
+		// Nothing survives SIGKILL, not even a survivor.
+		f.exitLeader()
+		f.releaseTerminal()
+	case f.ignoreHUP.Load():
+		// Trapped: the signal lands and changes nothing.
+	default:
+		f.exitLeader()
+		if !f.survivor.Load() {
+			f.releaseTerminal()
+		}
 	}
 	return nil
 }
 
 func (f *fakeProc) Wait() error {
-	atomic.AddInt32(&f.waitCalls, 1)
+	<-f.exited
 	return f.waitErr
 }
+
+// exitLeader ends the child process itself, unblocking Wait.
+func (f *fakeProc) exitLeader() { f.exitOnce.Do(func() { close(f.exited) }) }
+
+// releaseTerminal drops the last hold on the slave, so the master reaches
+// EOF and the pump stops.
+func (f *fakeProc) releaseTerminal() { f.closeOnce.Do(func() { _ = f.pw.Close() }) }
 
 // emit makes the pump observe data on its Read.
 func (f *fakeProc) emit(s string) {
 	_, _ = f.pw.Write([]byte(s))
 }
 
-// emitAndClose writes data then closes, simulating a process that printed
-// final output then exited.
+// emitAndClose writes data then ends the process and its terminal,
+// simulating a program that printed final output then exited cleanly.
 func (f *fakeProc) emitAndClose(s string) {
 	if s != "" {
 		_, _ = f.pw.Write([]byte(s))
 	}
-	_ = f.pw.Close()
-	atomic.StoreInt32(&f.closed, 1)
+	f.exitLeader()
+	f.releaseTerminal()
+}
+
+// exitLeavingSurvivor models the interesting case: the program exits, but
+// something it started still holds the terminal, so the pump never stops on
+// its own. Only a group signal frees it.
+func (f *fakeProc) exitLeavingSurvivor() {
+	f.survivor.Store(true)
+	f.exitLeader()
 }
 
 // closeWithErr terminates the read side with a custom error (covers the
-// non-EOF read-error branch in pump).
+// non-EOF read-error branch in pump). The process is gone with it: a master
+// that errors has no terminal left to hold.
 func (f *fakeProc) closeWithErr(err error) {
 	_ = f.pw.CloseWithError(err)
-	atomic.StoreInt32(&f.closed, 1)
+	f.closeOnce.Do(func() {})
+	f.exitLeader()
 }
 
 func (f *fakeProc) writes() []byte {
@@ -91,6 +136,13 @@ func (f *fakeProc) writes() []byte {
 	out := make([]byte, len(f.written))
 	copy(out, f.written)
 	return out
+}
+
+// sent returns the signals delivered to the process group, in order.
+func (f *fakeProc) sent() []syscall.Signal {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]syscall.Signal(nil), f.signals...)
 }
 
 // --- starter helpers ----------------------------------------------------
@@ -133,7 +185,7 @@ func recordingStarter() (Starter, func() []*fakeProc, func(error)) {
 type fakeTicker struct{ ch chan time.Time }
 
 func (f *fakeTicker) C() <-chan time.Time { return f.ch }
-func (f *fakeTicker) Stop()                {}
+func (f *fakeTicker) Stop()               {}
 
 type fakeClock struct {
 	afterCh chan time.Time
@@ -148,7 +200,7 @@ func newFakeClock() *fakeClock {
 }
 
 func (c *fakeClock) After(time.Duration) <-chan time.Time { return c.afterCh }
-func (c *fakeClock) NewTicker(time.Duration) Ticker        { return c.ticker }
+func (c *fakeClock) NewTicker(time.Duration) Ticker       { return c.ticker }
 
 func (c *fakeClock) tick()    { c.ticker.ch <- time.Now() }
 func (c *fakeClock) timeout() { c.afterCh <- time.Now() }
